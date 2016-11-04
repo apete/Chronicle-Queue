@@ -59,11 +59,10 @@ public class NotCompleteTest {
             Thread.sleep(100);
 
 //            System.out.println(queue.dump());
-        }
 
         // this is what will corrupt the queue
         BinaryLongReference.forceAllToNotCompleteState();
-
+    }
         try (final ChronicleQueue queue = binary(tmpDir)
                 .timeoutMS(500)
                 .build()) {
@@ -97,11 +96,10 @@ public class NotCompleteTest {
             Thread.sleep(100);
 
 //            System.out.println(queue.dump());
-        }
 
         // this is what will corrupt the queue
         BinaryLongArrayReference.forceAllToNotCompleteState();
-
+    }
         try (final ChronicleQueue queue = binary(tmpDir)
                 .timeoutMS(500)
                 .build()) {
@@ -148,31 +146,32 @@ public class NotCompleteTest {
                     "  indexing: !SCQSIndexing {\n" +
                     "    indexCount: 8,\n" +
                     "    indexSpacing: 1,\n" +
-                    "    index2Index: 352,\n" +
+                    "    index2Index: 377,\n" +
                     "    lastIndex: 0\n" +
                     "  },\n" +
                     "  lastAcknowledgedIndexReplicated: -1,\n" +
                     "  recovery: !TimedStoreRecovery {\n" +
                     "    timeStamp: 0\n" +
-                    "  }\n" +
+                    "  },\n" +
+                    "  deltaCheckpointInterval: 0\n" +
                     "}\n" +
-                    "# position: 352, header: -1\n" +
+                    "# position: 377, header: -1\n" +
                     "--- !!meta-data #binary\n" +
                     "index2index: [\n" +
                     "  # length: 8, used: 1\n" +
-                    "  456,\n" +
+                    "  480,\n" +
                     "  0, 0, 0, 0, 0, 0, 0\n" +
                     "]\n" +
-                    "# position: 456, header: -1\n" +
+                    "# position: 480, header: -1\n" +
                     "--- !!meta-data #binary\n" +
                     "index: [\n" +
                     "  # length: 8, used: 0\n" +
                     "  0, 0, 0, 0, 0, 0, 0, 0\n" +
                     "]\n" +
-                    "# position: 552, header: -1 or 0\n" +
+                    "# position: 576, header: -1 or 0\n" +
                     "--- !!not-ready-data! #binary\n" +
                     "...\n" +
-                    "# 83885524 bytes remaining\n", queue.dump());
+                    "# 83885500 bytes remaining\n", queue.dump());
         }
 
         try (final ChronicleQueue queue = binary(tmpDir).timeoutMS(500).build()) {
@@ -185,7 +184,7 @@ public class NotCompleteTest {
             assertEquals("--- !!meta-data #binary\n" +
                     "header: !SCQStore {\n" +
                     "  wireType: !WireType BINARY_LIGHT,\n" +
-                    "  writePosition: 552,\n" +
+                    "  writePosition: 576,\n" +
                     "  roll: !SCQSRoll {\n" +
                     "    length: !int 86400000,\n" +
                     "    format: yyyyMMdd,\n" +
@@ -194,33 +193,34 @@ public class NotCompleteTest {
                     "  indexing: !SCQSIndexing {\n" +
                     "    indexCount: 8,\n" +
                     "    indexSpacing: 1,\n" +
-                    "    index2Index: 352,\n" +
+                    "    index2Index: 377,\n" +
                     "    lastIndex: 1\n" +
                     "  },\n" +
                     "  lastAcknowledgedIndexReplicated: -1,\n" +
                     "  recovery: !TimedStoreRecovery {\n" +
                     "    timeStamp: 0\n" +
-                    "  }\n" +
+                    "  },\n" +
+                    "  deltaCheckpointInterval: 0\n" +
                     "}\n" +
-                    "# position: 352, header: -1\n" +
+                    "# position: 377, header: -1\n" +
                     "--- !!meta-data #binary\n" +
                     "index2index: [\n" +
                     "  # length: 8, used: 1\n" +
-                    "  456,\n" +
+                    "  480,\n" +
                     "  0, 0, 0, 0, 0, 0, 0\n" +
                     "]\n" +
-                    "# position: 456, header: -1\n" +
+                    "# position: 480, header: -1\n" +
                     "--- !!meta-data #binary\n" +
                     "index: [\n" +
                     "  # length: 8, used: 1\n" +
-                    "  552,\n" +
+                    "  576,\n" +
                     "  0, 0, 0, 0, 0, 0, 0\n" +
                     "]\n" +
-                    "# position: 552, header: 0\n" +
+                    "# position: 576, header: 0\n" +
                     "--- !!data #binary\n" +
                     "some: data\n" +
                     "...\n" +
-                    "# 83885510 bytes remaining\n", queue.dump());
+                    "# 83885486 bytes remaining\n", queue.dump());
         }
     }
 }

@@ -21,6 +21,7 @@ import net.openhft.chronicle.bytes.MappedBytes;
 import net.openhft.chronicle.core.Jvm;
 import net.openhft.chronicle.core.OS;
 import net.openhft.chronicle.core.threads.EventLoop;
+import net.openhft.chronicle.core.threads.ThreadLocalHelper;
 import net.openhft.chronicle.core.time.TimeProvider;
 import net.openhft.chronicle.core.util.StringUtils;
 import net.openhft.chronicle.queue.ExcerptAppender;
@@ -36,6 +37,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.*;
+import java.lang.ref.WeakReference;
+import java.lang.reflect.Method;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.text.ParseException;
@@ -43,6 +46,7 @@ import java.util.*;
 import java.util.concurrent.CopyOnWriteArraySet;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.BiFunction;
 import java.util.function.Consumer;
 import java.util.function.Function;
@@ -54,12 +58,14 @@ public class SingleChronicleQueue implements RollingChronicleQueue {
 
     public static final String SUFFIX = ".cq4";
     private static final Logger LOG = LoggerFactory.getLogger(SingleChronicleQueue.class);
-    protected final ThreadLocal<ExcerptAppender> excerptAppenderThreadLocal = ThreadLocal.withInitial(this::newAppender);
+    protected final ThreadLocal<WeakReference<ExcerptAppender>> excerptAppenderThreadLocal = new ThreadLocal<>();
     protected final int sourceId;
     final Supplier<Pauser> pauserSupplier;
     final long timeoutMS;
     @NotNull
     final File path;
+    final AtomicBoolean isClosed = new AtomicBoolean();
+    private final ThreadLocal<WeakReference<ExcerptContext>> tlTailer = new ThreadLocal<>();
     @NotNull
     private final RollCycle rollCycle;
     @NotNull
@@ -82,10 +88,11 @@ public class SingleChronicleQueue implements RollingChronicleQueue {
     @NotNull
     private final BiFunction<RollingChronicleQueue, Wire, WireStore> storeFactory;
     private final StoreRecoveryFactory recoverySupplier;
+    private final Set<Runnable> closers = new CopyOnWriteArraySet<>();
+    private final boolean readOnly;
     long firstAndLastCycleTime = 0;
     int firstCycle = Integer.MAX_VALUE, lastCycle = Integer.MIN_VALUE;
-    private ThreadLocal<ExcerptContext> tlTailer;
-    private final Set<Runnable> closers = new CopyOnWriteArraySet<>();
+    private int deltaCheckpointInterval;
 
     protected SingleChronicleQueue(@NotNull final SingleChronicleQueueBuilder builder) {
         rollCycle = builder.rollCycle();
@@ -106,9 +113,25 @@ public class SingleChronicleQueue implements RollingChronicleQueue {
         pauserSupplier = builder.pauserSupplier();
         timeoutMS = builder.timeoutMS();
         storeFactory = builder.storeFactory();
+
+        if (builder.getClass().getName().equals("software.chronicle.enterprise.queue.EnterpriseChronicleQueueBuilder")) {
+            try {
+                Method deltaCheckpointInterval = builder.getClass().getDeclaredMethod
+                        ("deltaCheckpointInterval");
+                deltaCheckpointInterval.setAccessible(true);
+                this.deltaCheckpointInterval = (Integer) deltaCheckpointInterval.invoke(builder);
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
+        }
+
         sourceId = builder.sourceId();
         recoverySupplier = builder.recoverySupplier();
-        tlTailer = ThreadLocal.withInitial(() -> new SingleChronicleQueueExcerpts.StoreTailer(this));
+        readOnly = builder.readOnly();
+    }
+
+    ExcerptContext getContext() {
+        return ThreadLocalHelper.getTL(tlTailer, this, SingleChronicleQueueExcerpts.StoreTailer::new);
     }
 
     @NotNull
@@ -227,6 +250,11 @@ public class SingleChronicleQueue implements RollingChronicleQueue {
         return recoverySupplier;
     }
 
+    @Override
+    public int deltaCheckpointInterval() {
+        return deltaCheckpointInterval;
+    }
+
     /**
      * @return if we uses a ring buffer to buffer the appends, the Excerpts are written to the
      * Chronicle Queue using a background thread
@@ -247,7 +275,10 @@ public class SingleChronicleQueue implements RollingChronicleQueue {
     @NotNull
     @Override
     public ExcerptAppender acquireAppender() {
-        return excerptAppenderThreadLocal.get();
+        if (readOnly) {
+            throw new IllegalStateException("Can't append to a read-only chronicle");
+        }
+        return ThreadLocalHelper.getTL(excerptAppenderThreadLocal, this, SingleChronicleQueue::newAppender);
     }
 
     @NotNull
@@ -270,7 +301,7 @@ public class SingleChronicleQueue implements RollingChronicleQueue {
     private long exceptsPerCycle(long cycle) {
         WireStore wireStore = storeForCycle((int) cycle, epoch, false);
         try {
-            return wireStore.sequenceForPosition(tlTailer.get(), wireStore.writePosition(),
+            return wireStore.sequenceForPosition(getContext(), wireStore.writePosition(),
                     true) + 1;
         } catch (Exception e) {
             throw new IllegalStateException(e);
@@ -278,6 +309,16 @@ public class SingleChronicleQueue implements RollingChronicleQueue {
 
     }
 
+    /**
+     * Will give you the number of excerpts between 2 index’s ( as exists on the current file
+     * system ). If intermediate chronicle files are removed this will effect the result.
+     *
+     * @param lowerIndex the lower index
+     * @param upperIndex the higher index
+     * @return will give you the number of excerpts between 2 index’s. It’s not as simple as just
+     * subtracting one number from the other.
+     * @throws IllegalStateException if we are not able to read the chronicle files
+     */
     @Override
     public long countExcerpts(long lowerIndex, long upperIndex) throws IllegalStateException {
         if (lowerIndex > upperIndex) {
@@ -358,18 +399,22 @@ public class SingleChronicleQueue implements RollingChronicleQueue {
     }
 
     @Override
+    public boolean isClosed() {
+        return isClosed.get();
+    }
+
+    @Override
     public void close() {
-        this.pool.close();
+        if (isClosed.getAndSet(true))
+            return;
         closers.forEach(Runnable::run);
+        this.pool.close();
     }
 
     @Override
     public final void release(@NotNull WireStore store) {
         this.pool.release(store);
     }
-
-//    long lastPathListTime = 0;
-//    String[] lastPathList = null;
 
     @Override
     public final int cycle() {
@@ -378,7 +423,7 @@ public class SingleChronicleQueue implements RollingChronicleQueue {
 
     @Override
     public long firstIndex() {
-        // TODO - as discuessed, peter is going find another way to do this as this solution
+        // TODO - as discussed, peter is going find another way to do this as this solution
         // currently breaks tests in chronicle engine - see net.openhft.chronicle.engine.queue.LocalQueueRefTest
 
         int cycle = firstCycle();
@@ -389,51 +434,57 @@ public class SingleChronicleQueue implements RollingChronicleQueue {
     }
 
     String[] getList() {
-//        final long now = time.currentTimeMillis();
-//        if (lastPathListTime + 10 > now) {
-//            return lastPathList;
-//        }
-//        lastPathListTime = now;
-//        return lastPathList = path.list();
         return path.list();
     }
 
     private void setFirstAndLastCycle() {
-        long now = time.currentTimeMillis();
+        long now = time.currentTimeMillis() + System.currentTimeMillis();
         if (now == firstAndLastCycleTime)
             return;
 
         firstCycle = Integer.MAX_VALUE;
         lastCycle = Integer.MIN_VALUE;
 
-        @Nullable final String[] files = getList();
+        // we use this to double check the result
+        final String[] files = getList();
 
-        if (files == null) {
+        if (files == null)
             return;
-        }
 
         for (String file : files) {
-            try {
-                if (!file.endsWith(SUFFIX))
-                    continue;
 
-                file = file.substring(0, file.length() - SUFFIX.length());
+            if (!file.endsWith(SUFFIX))
+                continue;
 
-                int fileCycle = dateCache.parseCount(file);
-                if (firstCycle > fileCycle)
-                    firstCycle = fileCycle;
-                if (lastCycle < fileCycle)
-                    lastCycle = fileCycle;
+            file = file.substring(0, file.length() - SUFFIX.length());
 
-            } catch (ParseException fallback) {
-                // ignored
-            }
+            int fileCycle = dateCache.parseCount(file);
+            if (firstCycle > fileCycle)
+                firstCycle = fileCycle;
+            if (lastCycle < fileCycle)
+                lastCycle = fileCycle;
+
         }
+
+        firstAndLastCycleTime = now;
     }
 
     public int firstCycle() {
         setFirstAndLastCycle();
         return firstCycle;
+    }
+
+
+    /**
+     * allows the appenders to inform the queue that they have rolled
+     *
+     * @param cycle the cycle the appender has rolled to
+     */
+    void onRoll(int cycle) {
+        if (lastCycle < cycle)
+            lastCycle = cycle;
+        if (firstCycle > cycle)
+            firstCycle = cycle;
     }
 
     @Override
@@ -467,7 +518,7 @@ public class SingleChronicleQueue implements RollingChronicleQueue {
     private MappedBytes mappedBytes(File cycleFile) throws FileNotFoundException {
         long chunkSize = OS.pageAlign(blockSize);
         long overlapSize = OS.pageAlign(blockSize / 4);
-        return MappedBytes.mappedBytes(cycleFile, chunkSize, overlapSize);
+        return MappedBytes.mappedBytes(cycleFile, chunkSize, overlapSize, readOnly);
     }
 
     private int toCycle(Map.Entry<Long, File> entry) throws ParseException {
@@ -511,7 +562,7 @@ public class SingleChronicleQueue implements RollingChronicleQueue {
                 wire.headerNumber(rollCycle.toIndex(cycle, 0) - 1);
 
                 WireStore wireStore;
-                if (wire.writeFirstHeader()) {
+                if ((!readOnly) && wire.writeFirstHeader()) {
                     wireStore = storeFactory.apply(that, wire);
                     wire.updateFirstHeader();
                 } else {
@@ -553,7 +604,7 @@ public class SingleChronicleQueue implements RollingChronicleQueue {
          * @return cycleTree for the current directory / parentFile
          * @throws ParseException
          */
-        private NavigableMap<Long, File> cycleTree() throws ParseException {
+        private NavigableMap<Long, File> cycleTree() {
 
             final File parentFile = path;
 

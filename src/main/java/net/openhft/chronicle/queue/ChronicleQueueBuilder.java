@@ -25,6 +25,7 @@ import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
 import java.io.File;
+import java.util.TimeZone;
 import java.util.function.Consumer;
 
 /**
@@ -106,4 +107,8 @@ public interface ChronicleQueueBuilder<B extends ChronicleQueueBuilder<B, Q>, Q 
     B storeFileListener(StoreFileListener storeFileListener);
 
     StoreFileListener storeFileListener();
+
+    boolean readOnly();
+
+    B readOnly(boolean readOnly);
 }

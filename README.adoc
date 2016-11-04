@@ -122,7 +122,8 @@ Appenders and tailers are cheap as they don't even require a TCP connection. The
 
 Rather than partition the queue files across servers, we support each server, storing as much data as you have disk space.
 This is much more scalable than being limited to the amount of memory space you have.
-You can buy a redundant pair of 6 TB of enterprise disks for $700 (retail) at the time of writing (July 2016) and that is much cheaper than 6 TB of memory.
+You can buy a redundant pair of 6 TB of enterprise disks for $700 (retail) at the time of 
+(July 2016) and that is much cheaper than 6 TB of memory.
 
 === Restrictions on topics and messages.
 
@@ -177,7 +178,6 @@ Replication has three modes of operation;
 == Use Cases
 
 Chronicle Queue is most often used for "Producer Centric" systems where you need to retain a lot of data for days or years.
-
 
 === What is a Producer Centric System?
 
@@ -237,15 +237,52 @@ This makes using Stream Processing attractive for systems which need a high degr
 Chronicle Queue is designed to be driven from code. You can easily add an interface which suits your needs.
 
 === Writing to a Queue
+In Chronicle-Queue we refer to the act of writing your data to the chronicle as storing an excerpt. This data could be made up from anything ranging from text, numbers or a serialised blob. Ultimately all your data regardless of what it is, is  stored as a series of bytes.
+Just before storing your excerpt to chronicle queue, chronicle queue reserves an 8 byte header. Into this header chronicle-queue will write the length of your data. This way, when chronicle-queue comes to read your excerpt it knows how long each blob of data is. We refer to this 8byte header along with your except as a document. So strickly speaking Chronicle-Queue can be used to read and write documents. Within this 8 byte header we also reserve a few bits that are used for a number of internal operations, such as locking to make chronicle-queue thread safe across both processors and threads. The important thing to note is because of this you can’t strictly convert the 8 bytes to an integer to find the length of your data blob.
 
-Once you start writing to a queue, you have a choice of a number of high level interfaces down to a low level API to raw memory.
+To write data to a Chronicle-Queue, you must first create an Appender
 
 [source, Java]
 ----
 try (ChronicleQueue queue = SingleChronicleQueueBuilder.binary(path + "/trades").build()) {
    final ExcerptAppender appender = queue.acquireAppender();
+}   
 ----
 
+So, Chronicle-Queue uses and Appender to write to the queue and a Tailer to read from the queue. Unlike other java queuing soliutions, messages are not lost when they are read with a Tailer, This is covered in more detail in the section below on "Reading from a Queue"
+
+Chronicle-Queue uses the following low level interface to write the data 
+[source, Java]
+----
+try (final DocumentContext dc = appender.writingDocument()) { 
+      dc.wire().write().text(“your text data“);
+}
+----
+
+the close on the try-with-resources, is the point at when the length of the data is written to the header. You can also use the DocumentContext to find out the index that your data has just been assigned ( see below )  you can later use this index to move-to/look up this excerpt. Each chronicle-queue excerpt has a unique index.
+
+[source, Java]
+----
+try (final DocumentContext dc = appender.writingDocument()) {
+    dc.wire().write().text(“your text data“);
+    System.out.println("your data was store to index="+ dc.index());
+}   
+----
+The high level methods below such as “writeText()” are convenience methods on calling  appender.writingDocument(), but both approaches essentially do the same thing. The actual code of writeText(CharSequence text) looks like this.
+
+[source, Java]
+----
+/**
+ * @param text to write a message
+ */
+void writeText(CharSequence text) {
+    try (DocumentContext dc = writingDocument()) {
+        dc.wire().bytes().append8bit(text);
+    }
+}
+----
+
+So you have a choice of a number of high level interfaces down to a low level API to raw memory.
 This is the highest level API which hides the fact you are writing to messaging at all. The benefit is; you can swap calls to the interface with a real component or an interface to a different protocol.
 
 [source, Java]
@@ -366,9 +403,9 @@ Hello World
 Chronicle Queue stores its data in binary format, with a file extension of 'cq4' :
 
 ```
-\ @πheader∂SCQStoreÇE  »wireType∂WireTypeÊBINARYÕwritePositionèèèèß        ƒroll∂SCQSRollÇ*   ∆length¶ÄÓ6 ∆format
-ÎyyyyMMdd-HH≈epoch¶ÄÓ6 »indexing∂SCQSIndexingÇN    indexCount• ÃindexSpacingÀindex2Indexé    ß        …lastIndexé 
-   ß        ﬂlastAcknowledgedIndexReplicatedé     ßˇˇˇˇˇˇˇˇ»recovery∂TimedStoreRecoveryÇ   …timeStampèèèß                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    
+\�@πheader∂SCQStoreÇE��»wireType∂WireTypeÊBINARYÕwritePositionèèèèß��������ƒroll∂SCQSRollÇ*���∆length¶ÄÓ6�∆format
+ÎyyyyMMdd-HH≈epoch¶ÄÓ6�»indexing∂SCQSIndexingÇN��� indexCount•�ÃindexSpacingÀindex2Indexé����ß��������…lastIndexé�
+���ß��������ﬂlastAcknowledgedIndexReplicatedé�����ßˇˇˇˇˇˇˇˇ»recovery∂TimedStoreRecoveryÇ���…timeStampèèèß����������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������������
 ```
 
 This can often be  a bit difficult to read, So its better to dump the  'cq4'  files as text , this
